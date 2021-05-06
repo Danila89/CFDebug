@@ -5,6 +5,11 @@ from copy import deepcopy
 from multiprocessing import Process
 from numpy.linalg import inv
 from scipy import sparse
+import logging
+import implicit
+
+logging.basicConfig()
+logging.getLogger().setLevel(logging.INFO)
 
 # hyperparameters
 parser = argparse.ArgumentParser(description="CFDebug")
@@ -20,6 +25,10 @@ parser.add_argument("--debug_lr", type=float, default=0.05, help="learning rate 
 parser.add_argument("--retrain", type=str, default="full", help="the retraining mode in the debugging stage: full/inc")
 parser.add_argument("--process", type=int, default=4, help="# of processes in the debugging stage")
 parser.add_argument("--mode", type=str, default="debug", help="debug/test")
+parser.add_argument("--implicit", action='store_true', help="use implicit ALS")
+parser.add_argument("--alpha", type=int, default=1, help="confidence scaling for implicit feedback dataset")
+parser.add_argument("--allow_confidence_increase", action='store_true', help='allow confidence increase during debug stage')
+
 args = parser.parse_args()
 
 
@@ -84,17 +93,49 @@ def cf_ridge_regression(csr_matrix, reg_lambda, fixed_feature, update_feature):
 
 
 def ALS(train_csr, args, n_iters, init_user_features=None, init_item_features=None):
-    user_features = 0.1 * np.random.RandomState(seed=0).rand(train_csr.shape[0], args.factor)
-    item_features = 0.1 * np.random.RandomState(seed=0).rand(train_csr.shape[1], args.factor)
-    if init_user_features is not None:
-        user_features = init_user_features
-    if init_item_features is not None:
-        item_features = init_item_features
-    train_csr_transpose = train_csr.T.tocsr()
-    for iteration in range(n_iters):
-        cf_ridge_regression(train_csr, args.lambda_u, item_features, user_features)
-        cf_ridge_regression(train_csr_transpose, args.lambda_v, user_features, item_features)
-    return user_features, item_features
+    if args.implicit:
+        logging.info('ALS, alpha {} max rating {}'.format(args.alpha, train_csr.data.max()))
+        model = implicit.als.AlternatingLeastSquares(factors=args.factor, iterations=n_iters, num_threads=6,
+                                                     regularization=max(args.lambda_u, args.lambda_v))
+        model.fit(train_csr.T, show_progress=False)
+        return model.user_factors, model.item_factors
+    else:
+        user_features = 0.1 * np.random.RandomState(seed=0).rand(train_csr.shape[0], args.factor)
+        item_features = 0.1 * np.random.RandomState(seed=0).rand(train_csr.shape[1], args.factor)
+        if init_user_features is not None:
+            user_features = init_user_features
+        if init_item_features is not None:
+            item_features = init_item_features
+        train_csr_transpose = train_csr.T.tocsr()
+        for iteration in range(n_iters):
+            logging.info('ALS iteration {}'.format(iteration))
+            cf_ridge_regression(train_csr, args.lambda_u, item_features, user_features)
+            cf_ridge_regression(train_csr_transpose, args.lambda_v, user_features, item_features)
+        return user_features, item_features
+
+
+def u_emb_d_c1(lamb, C, R, v, user_ind, vvt):
+    idxs = np.argwhere(C[user_ind]).flatten()
+    m_inv = np.linalg.inv(lamb * np.eye(v.shape[1], v.shape[1]) + vvt + \
+                          np.einsum('i,ik->ik', C[user_ind, idxs] - R[user_ind, idxs], v[idxs]).T.dot(v[idxs]))
+    outer_products = np.einsum('ij,il->ijl', v[idxs], v[idxs])
+    m_inv_v_outer = np.einsum('ij,kj->ki', m_inv, v[idxs])
+    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
+    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
+                           m_inv.dot(np.einsum('i,ik->k', C[user_ind, idxs], v[idxs])))
+    return -first_part + m_inv_v_outer
+
+
+def i_emb_d_c1(lamb, C, R, u, item_ind, uut):
+    idxs = np.argwhere(C[:, item_ind]).flatten()
+    m_inv = np.linalg.inv(lamb * np.eye(u.shape[1], u.shape[1]) + uut + \
+                          np.einsum('i,ik->ik', C[idxs, item_ind] - R[idxs, item_ind], u[idxs]).T.dot(u[idxs]))
+    outer_products = np.einsum('ij,il->ijl', u[idxs], u[idxs])
+    m_inv_u_outer = np.einsum('ij,kj->ki', m_inv, u[idxs])
+    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
+    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
+                           m_inv.dot(np.einsum('i,ik->k', C[idxs, item_ind], u[idxs])))
+    return -first_part + m_inv_u_outer
 
 
 def grad_calc(train_csr, val_csr, zipped_index, user_features, item_features, args):
@@ -148,6 +189,59 @@ def grad_calc(train_csr, val_csr, zipped_index, user_features, item_features, ar
     return sparse.coo_matrix((data, (row, col)), shape=(n_users, n_items)).tocsr()
 
 
+def grad_calc_implicit(train_csr, val_csr, zipped_index, user_features, item_features, args):
+    n_users = train_csr.shape[0]
+    n_items = train_csr.shape[1]
+
+    pred_val = np.dot(user_features, item_features.T)
+    confidence_val_dense = val_csr.toarray()
+    confidence_train_dense = train_csr.toarray()
+    error_weights_val = confidence_val_dense.copy()
+    preference_val_dense = confidence_val_dense.copy()
+    preference_val_dense[preference_val_dense > 0] = 1
+    preference_train_dense = confidence_train_dense.copy()
+    preference_train_dense[preference_train_dense > 0] = 1
+    error_weights_val[error_weights_val == 0] = 1
+    diffs = 2 * error_weights_val * (pred_val - preference_val_dense)
+    grad_r_user = diffs.dot(item_features)
+    grad_r_item = diffs.T.dot(user_features)
+
+    grad_user_m = np.zeros(shape=(train_csr.nnz, args.factor))
+    grad_user_dict = {}
+    cnt = 0
+    VVT = np.dot(item_features.T, item_features)
+    UUT = np.dot(user_features.T, user_features)
+
+    for i in range(n_users):
+        _, item_idx = train_csr[i, :].nonzero()
+        grad_user_m_i = u_emb_d_c1(args.lambda_u, confidence_train_dense, preference_train_dense, item_features, i, VVT)
+        for item_num, i_idx in enumerate(item_idx):
+            tup = (i, i_idx)
+            grad_user_dict[tup] = cnt
+            grad_user_m[cnt] = grad_user_m_i[item_num][:]
+            cnt += 1
+
+    train_csc = train_csr.tocsc()
+    grad_item_m = np.zeros(shape=(train_csc.nnz, args.factor))
+    grad_item_dict = {}
+    cnt = 0
+    for i in range(n_items):
+        user_idx, _ = train_csc[:, i].nonzero()
+        grad_item_m_i = i_emb_d_c1(args.lambda_v, confidence_train_dense, preference_train_dense, user_features, i, UUT)
+        for user_num, u_idx in enumerate(user_idx):
+            tup = (i, u_idx)
+            grad_item_dict[tup] = cnt
+            grad_item_m[cnt] = grad_item_m_i[user_num][:]
+            cnt += 1
+
+    row = [i for i, j in zipped_index]
+    col = [j for i, j in zipped_index]
+    data = [(np.dot(grad_r_user[i], grad_user_m[grad_user_dict[(i, j)]].T)
+             + np.dot(grad_r_item[j], grad_item_m[grad_item_dict[(j, i)]].T))
+            for i, j in zipped_index]
+    return sparse.coo_matrix((data, (row, col)), shape=(n_users, n_items)).tocsr()
+
+
 def grad_update_loop(train_csr, val_csr, zipped_index, max_rating, min_rating, args):
     user_feature, item_feature = ALS(train_csr, args, args.als_iter)
 
@@ -156,10 +250,14 @@ def grad_update_loop(train_csr, val_csr, zipped_index, max_rating, min_rating, a
     user_feature_i = user_feature
     item_feature_i = item_feature
     for i in range(args.debug_iter):
-        gradients = grad_calc(A_i, val_csr, zipped_index, user_feature_i, item_feature_i, args)
+        if args.implicit:
+            gradients = grad_calc_implicit(A_i, val_csr, zipped_index, user_feature_i, item_feature_i, args)
+        else:
+            gradients = grad_calc(A_i, val_csr, zipped_index, user_feature_i, item_feature_i, args)
         A_i = A_i - gradients * args.debug_lr
         for _ in range(A_i.nnz):
             A_i.data[_] = min(max_rating, max(min_rating, A_i.data[_]))
+        logging.info("A_i mean {}, min {}, max {}".format(A_i.data.mean(), A_i.data.min(), A_i.data.max()))
         if args.retrain == "full":
             user_feature_i, item_feature_i = ALS(A_i, args, args.als_iter)
         if args.retrain == "inc":
@@ -168,16 +266,33 @@ def grad_update_loop(train_csr, val_csr, zipped_index, max_rating, min_rating, a
     return C_i
 
 
+def get_path(args, part_id):
+    path = f"./save/{args.dataset}/f{args.fold}_m{args.debug_iter}_lr{args.debug_lr}_part{part_id}_{args.retrain}"
+    if args.implicit:
+        path += '_implicit'
+    if args.allow_confidence_increase:
+        path += '_allow_conf_increase'
+    return path + '.txt'
+
+
 def debug_process(train_csr, val_csr, zipped_index, max_rating, min_rating, id, args):
-    change_csr = grad_update_loop(train_csr, val_csr, zipped_index, max_rating, min_rating, args)
+    if args.implicit:
+        alpha = args.alpha
+    else:
+        alpha = 1
+    change_csr = grad_update_loop(alpha * train_csr, alpha * val_csr, zipped_index, max_rating, min_rating, args)
     change_arr = change_csr.toarray()
-    path = f"./save/{args.dataset}/f{args.fold}_m{args.debug_iter}_lr{args.debug_lr}_part{id}_{args.retrain}.txt"
+    path = get_path(args, id)
     with open(path, "w+") as f:
         for i, j in zipped_index:
             print(i, j, change_arr[i, j], file=f, sep=',')
 
 
 def aggregate_process(edit, sorted_edges, train_csr, test_csr, args, old_pred, max_rating, min_rating, percent):
+    if args.implicit:
+        alpha = args.alpha
+    else:
+        alpha = 1
     cut_pos = int(len(sorted_edges) * percent * 0.01)
     base_arr = train_csr.todense()
     for i, j, v in sorted_edges[:cut_pos]:
@@ -186,9 +301,19 @@ def aggregate_process(edit, sorted_edges, train_csr, test_csr, args, old_pred, m
         elif edit == "mod":
             base_arr[i, j] += v
             base_arr[i, j] = min(max_rating, max(min_rating, base_arr[i, j]))
-    user_feature, item_feature = ALS(sparse.csr_matrix(base_arr), args, args.als_iter)
+    user_feature, item_feature = ALS(alpha * sparse.csr_matrix(base_arr), args, args.als_iter)
     new_pred = np.dot(user_feature, item_feature.T)
-    return RMSE_with_ttest(new_pred, old_pred, test_csr)
+    if args.implicit:
+        aucs = roc_auc_with_t_test(new_pred, old_pred, test_csr)
+        mse = RMSE_weighted_with_t_test(new_pred, old_pred, alpha * test_csr)
+        precisions = precision_at_10_with_t_test(new_pred, old_pred, test_csr)
+    else:
+        test_csr_binarized = test_csr.copy()
+        test_csr_binarized[test_csr_binarized > 3] = 1
+        aucs = roc_auc_with_t_test(new_pred, old_pred, test_csr_binarized)
+        mse = RMSE_with_ttest(new_pred, old_pred, test_csr)
+        precisions = precision_at_10_with_t_test(new_pred, old_pred, test_csr_binarized)
+    return aucs, mse, precisions
 
 
 # main process
@@ -200,9 +325,14 @@ if __name__ == "__main__":
     if args.mode == "debug":
         train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args.delim,
                                                                                         args.fold)
+        if args.implicit:
+            max_rating *= args.alpha
+            min_rating = 0
         fold_id = 0
         for rnd in range((args.fold + args.process - 1) // args.process):
             processes = []
+            if args.implicit and args.allow_confidence_increase:
+                max_rating *= 2
             for i in range(fold_id, fold_id + args.process):
                 process = Process(target=debug_process, args=(train_csr[i + 1], val_csr[i + 1], zipped_index[i + 1],
                                                               max_rating, min_rating, i + 1, args))
@@ -215,16 +345,21 @@ if __name__ == "__main__":
     elif args.mode == "test":
         train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args.delim,
                                                                                         args.fold)
+        if args.implicit:
+            max_rating *= args.alpha
+            min_rating = 0
+            alpha = args.alpha
+        else:
+            alpha = 1
         test_train_csr = sparse.csr_matrix(test_csr.shape)
         for i in range(args.fold):
             test_train_csr = test_train_csr + val_csr[i + 1]
-        user_feature, item_feature = ALS(test_train_csr, args, args.als_iter)
+        user_feature, item_feature = ALS(alpha * test_train_csr, args, args.als_iter)
         old_pred = np.dot(user_feature, item_feature.T)
-        old_rmse = RMSE(old_pred, test_csr)
 
         edge_dict = dict()
         for i in range(1, args.fold + 1):
-            path = f"./save/{args.dataset}/f{args.fold}_m{args.debug_iter}_lr{args.debug_lr}_part{i}_{args.retrain}.txt"
+            path = get_path(args, i)
             for line in open(path):
                 l = line.strip().split(',')
                 x = int(l[0])
@@ -238,9 +373,15 @@ if __name__ == "__main__":
                     else:
                         edge_dict[(x, y)] = 0
         edges = [(key[0], key[1], values) for key, values in edge_dict.items()]
-        sorted_edges = sorted(edges, key=lambda _: abs(_[2]), reverse=True)
+        if args.implicit:
+            sorted_edges = sorted(edges, key=lambda _: _[2], reverse=False)
+        else:
+            sorted_edges = sorted(edges, key=lambda _: abs(_[2]), reverse=True)
         for edit in ["del", "mod"]:
             for percent in [0.1, 0.2, 0.5, 1, 2, 5, 10]:
-                new_rmse, p_value = aggregate_process(edit, sorted_edges, test_train_csr, test_csr, args, old_pred,
-                                                      max_rating, min_rating, percent)
-                print(f"{edit} {percent}% training data: {old_rmse} -> {new_rmse}, p_value: {p_value}")
+                aucs, mse, precisions = aggregate_process(edit, sorted_edges, test_train_csr,
+                                                          test_csr, args, old_pred,
+                                                          max_rating, min_rating, percent)
+                print(f"{edit} {percent}% training data, ALS objective on test: {mse[1]} -> {mse[0]}, p_value: {mse[2]}")
+                print(f"{edit} {percent}% training data, aucs on test: {aucs[1]} -> {aucs[0]}, p_value: {aucs[2]}")
+                print(f"{edit} {percent}% training data, p@10 on test: {precisions[1]} -> {precisions[0]}, p_value: {precisions[2]}")
