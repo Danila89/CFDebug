@@ -72,6 +72,8 @@ def roc_auc_grouped(labels: np.ndarray,
                     predictions: np.ndarray,
                     group_ids: np.ndarray,
                     return_aucs_list: bool = False) -> Union[Tuple[float, float, int], np.ndarray]:
+    # efficient implementation of grouped auc, see test_metrics.py for the correctness check
+
     # l_max = labels.max()
     # l_min = labels.min()
     # logging.info(str(l_max) + ' ' + str(l_min))
@@ -131,6 +133,8 @@ def precision_at_k_grouped(labels: np.ndarray,
                            group_ids: np.ndarray,
                            k: int = 10,
                            return_precision_list: bool = False) -> Union[Tuple[float, float, int], np.ndarray]:
+    # efficient implementation of grouped precision@k, see test_metrics.py for the correctness check
+
     # l_max = labels.max()
     # l_min = labels.min()
     # logging.info(str(l_max) + ' ' + str(l_min))
@@ -174,3 +178,54 @@ def precision_at_10_with_t_test(estimation, old_estimation, truth):
     _, p_value = ttest_rel(precisions_new, precisions_old)
     return np.mean(precisions_new), np.mean(precisions_old), p_value
 
+
+def u_emb_d_c(lamb, C, R, v, user_ind, vvt):
+    # calculates derivatives of each component of the embedding of user 'user_ind'
+    # wrt each confidence value of the user
+    # return shape (embedding_dim, num non-zero elements in C[user_ind]
+
+    # see test_gradients.py for the correctness check
+    idxs = np.argwhere(C[user_ind]).flatten()
+    m_inv = np.linalg.inv(lamb * np.eye(v.shape[1], v.shape[1]) + vvt + \
+                          np.einsum('i,ik->ik', C[user_ind, idxs] - R[user_ind, idxs], v[idxs]).T.dot(v[idxs]))
+    outer_products = np.einsum('ij,il->ijl', v[idxs], v[idxs])
+    m_inv_v_outer = np.einsum('ij,kj->ki', m_inv, v[idxs])
+    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
+    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
+                           m_inv.dot(np.einsum('i,ik->k', C[user_ind, idxs], v[idxs])))
+    return -first_part + m_inv_v_outer
+
+
+def i_emb_d_c(lamb, C, R, u, item_ind, uut):
+    # calculates derivatives of each component of the embedding of item 'item_ind'
+    # wrt each confidence value of the item
+    # return shape (embedding_dim, num non-zero elements in C[:, item_ind]
+
+    # see test_gradients.py for the correctness check
+    idxs = np.argwhere(C[:, item_ind]).flatten()
+    m_inv = np.linalg.inv(lamb * np.eye(u.shape[1], u.shape[1]) + uut + \
+                          np.einsum('i,ik->ik', C[idxs, item_ind] - R[idxs, item_ind], u[idxs]).T.dot(u[idxs]))
+    outer_products = np.einsum('ij,il->ijl', u[idxs], u[idxs])
+    m_inv_u_outer = np.einsum('ij,kj->ki', m_inv, u[idxs])
+    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
+    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
+                           m_inv.dot(np.einsum('i,ik->k', C[idxs, item_ind], u[idxs])))
+    return -first_part + m_inv_u_outer
+
+
+def loss_d_emb(confidence_val: np.ndarray,
+               preference_val: np.ndarray,
+               pred_val: np.ndarray,
+               user_embeddings: np.ndarray,
+               item_embeddings: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    # calculates derivatives of loss on validation
+    # wrt user embeddings and item embeddings
+    # (note that following the original paper we ignore regularization here)
+
+    # see test_gradients.py for the correctness check
+    error_weights = confidence_val.copy()
+    error_weights[error_weights == 0] = 1
+    diffs = 2 * error_weights * (pred_val - preference_val)
+    grad_r_user = diffs.dot(item_embeddings)
+    grad_r_item = diffs.T.dot(user_embeddings)
+    return grad_r_user, grad_r_item

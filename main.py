@@ -116,43 +116,6 @@ def ALS(train_csr, args, n_iters, init_user_features=None, init_item_features=No
         return user_features, item_features
 
 
-def u_emb_d_c1(lamb, C, R, v, user_ind, vvt):
-    idxs = np.argwhere(C[user_ind]).flatten()
-    m_inv = np.linalg.inv(lamb * np.eye(v.shape[1], v.shape[1]) + vvt + \
-                          np.einsum('i,ik->ik', C[user_ind, idxs] - R[user_ind, idxs], v[idxs]).T.dot(v[idxs]))
-    outer_products = np.einsum('ij,il->ijl', v[idxs], v[idxs])
-    m_inv_v_outer = np.einsum('ij,kj->ki', m_inv, v[idxs])
-    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
-    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
-                           m_inv.dot(np.einsum('i,ik->k', C[user_ind, idxs], v[idxs])))
-    return -first_part + m_inv_v_outer
-
-
-def i_emb_d_c1(lamb, C, R, u, item_ind, uut):
-    idxs = np.argwhere(C[:, item_ind]).flatten()
-    m_inv = np.linalg.inv(lamb * np.eye(u.shape[1], u.shape[1]) + uut + \
-                          np.einsum('i,ik->ik', C[idxs, item_ind] - R[idxs, item_ind], u[idxs]).T.dot(u[idxs]))
-    outer_products = np.einsum('ij,il->ijl', u[idxs], u[idxs])
-    m_inv_u_outer = np.einsum('ij,kj->ki', m_inv, u[idxs])
-    m_inv_dot_outer_products = np.einsum('ij,cjk->cik', m_inv, outer_products)
-    first_part = np.einsum('cji,i->cj', m_inv_dot_outer_products,
-                           m_inv.dot(np.einsum('i,ik->k', C[idxs, item_ind], u[idxs])))
-    return -first_part + m_inv_u_outer
-
-
-def loss_d_emb(confidence_val: np.ndarray,
-               preference_val: np.ndarray,
-               pred_val: np.ndarray,
-               user_embeddings: np.ndarray,
-               item_embeddings: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-    error_weights = confidence_val.copy()
-    error_weights[error_weights == 0] = 1
-    diffs = 2 * error_weights * (pred_val - preference_val)
-    grad_r_user = diffs.dot(item_embeddings)
-    grad_r_item = diffs.T.dot(user_embeddings)
-    return grad_r_user, grad_r_item
-
-
 def grad_calc(train_csr, val_csr, zipped_index, user_features, item_features, args):
     n_users = train_csr.shape[0]
     n_items = train_csr.shape[1]
@@ -229,7 +192,7 @@ def grad_calc_implicit(train_csr, val_csr, zipped_index, user_features, item_fea
 
     for i in range(n_users):
         _, item_idx = train_csr[i, :].nonzero()
-        grad_user_m_i = u_emb_d_c1(args.lambda_u, confidence_train_dense, preference_train_dense, item_features, i, VVT)
+        grad_user_m_i = u_emb_d_c(args.lambda_u, confidence_train_dense, preference_train_dense, item_features, i, VVT)
         for item_num, i_idx in enumerate(item_idx):
             tup = (i, i_idx)
             grad_user_dict[tup] = cnt
@@ -242,7 +205,7 @@ def grad_calc_implicit(train_csr, val_csr, zipped_index, user_features, item_fea
     cnt = 0
     for i in range(n_items):
         user_idx, _ = train_csc[:, i].nonzero()
-        grad_item_m_i = i_emb_d_c1(args.lambda_v, confidence_train_dense, preference_train_dense, user_features, i, UUT)
+        grad_item_m_i = i_emb_d_c(args.lambda_v, confidence_train_dense, preference_train_dense, user_features, i, UUT)
         for user_num, u_idx in enumerate(user_idx):
             tup = (i, u_idx)
             grad_item_dict[tup] = cnt
