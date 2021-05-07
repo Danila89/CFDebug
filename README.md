@@ -1,4 +1,5 @@
 Code for NeurIPS'20 paper Trading Personalization for Accuracy: Data Debugging in Collaborative Filtering
+Implicit feedback support added
 
 **Requirements**
 ```
@@ -10,11 +11,18 @@ implicit
 
 **Usage**
 
-`python main.py --mode=test`
+Run debug process for explicit ALS on movielens
+`python main.py --mode debug`
 
-Run the above command to get the result on the movielens dataset.
+Run debug process for implicit ALS on movielens
+`python main.py --mode debug --implicit --alpha 5`
 
-To run the debug process, configure other parameters in the command, where the _mode_ parameter is set to _debug_.
+Get metrics for explicit ALS on movielens
+`python main.py --mode test`
+
+Get metrics process for implicit ALS on movielens
+`python main.py --mode test --implicit --alpha 5`
+
 
 Here is the code fragment about the settings of hyperparameters.
 
