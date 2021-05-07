@@ -45,8 +45,9 @@ def partition(ratings, seed, fold):
     return val_data, test_data
 
 
-def data_split(data_path, delimiter, fold):
-    ratings = load_data(data_path, delimiter)
+def data_split(data_path, args):
+    fold = args.fold
+    ratings = load_data(data_path, args)
     n_users = int(max(ratings[:, 0]) + 1)
     n_items = int(max(ratings[:, 1]) + 1)
     max_rating = max(ratings[:, 2])
@@ -323,8 +324,7 @@ if __name__ == "__main__":
         os.mkdir(f"./save/{args.dataset}")
 
     if args.mode == "debug":
-        train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args.delim,
-                                                                                        args.fold)
+        train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args)
         if args.implicit:
             max_rating *= args.alpha
             min_rating = 0
@@ -341,8 +341,7 @@ if __name__ == "__main__":
                 p.join()
             fold_id += args.process
     elif args.mode == "test":
-        train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args.delim,
-                                                                                        args.fold)
+        train_csr, val_csr, test_csr, zipped_index, max_rating, min_rating = data_split(file_path, args)
         if args.implicit:
             max_rating *= args.alpha
             min_rating = 0

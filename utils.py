@@ -4,8 +4,11 @@ from scipy.stats import ttest_rel
 from typing import Union, Tuple
 
 
-def load_data(data_path, delimiter):
-    raw_data = np.loadtxt(data_path, dtype=np.float, delimiter=delimiter, usecols=[0, 1, 2])
+def load_data(data_path, args):
+    raw_data = np.loadtxt(data_path, dtype=np.float, delimiter=args.delim, usecols=[0, 1, 2])
+    if args.implicit:
+        raw_data = raw_data[raw_data[:, 2] > 3]
+        raw_data[:, 2] = 1
     users = list(set(raw_data[:, 0].astype(np.int)))
     users.sort()
     user_dict = {k: i for i, k in enumerate(users)}
@@ -68,7 +71,7 @@ def RMSE_weighted_with_t_test(estimation, old_estimation, val_confidence):
 def roc_auc_grouped(labels: np.ndarray,
                     predictions: np.ndarray,
                     group_ids: np.ndarray,
-                    return_aucs_list=False) -> Union[Tuple[float, float, int], np.ndarray]:
+                    return_aucs_list: bool = False) -> Union[Tuple[float, float, int], np.ndarray]:
     # l_max = labels.max()
     # l_min = labels.min()
     # logging.info(str(l_max) + ' ' + str(l_min))
