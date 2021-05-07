@@ -140,6 +140,19 @@ def i_emb_d_c1(lamb, C, R, u, item_ind, uut):
     return -first_part + m_inv_u_outer
 
 
+def loss_d_emb(confidence_val: np.ndarray,
+               preference_val: np.ndarray,
+               pred_val: np.ndarray,
+               user_embeddings: np.ndarray,
+               item_embeddings: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    error_weights = confidence_val.copy()
+    error_weights[error_weights == 0] = 1
+    diffs = 2 * error_weights * (pred_val - preference_val)
+    grad_r_user = diffs.dot(item_embeddings)
+    grad_r_item = diffs.T.dot(user_embeddings)
+    return grad_r_user, grad_r_item
+
+
 def grad_calc(train_csr, val_csr, zipped_index, user_features, item_features, args):
     n_users = train_csr.shape[0]
     n_items = train_csr.shape[1]
@@ -198,15 +211,15 @@ def grad_calc_implicit(train_csr, val_csr, zipped_index, user_features, item_fea
     pred_val = np.dot(user_features, item_features.T)
     confidence_val_dense = val_csr.toarray()
     confidence_train_dense = train_csr.toarray()
-    error_weights_val = confidence_val_dense.copy()
     preference_val_dense = confidence_val_dense.copy()
     preference_val_dense[preference_val_dense > 0] = 1
     preference_train_dense = confidence_train_dense.copy()
     preference_train_dense[preference_train_dense > 0] = 1
-    error_weights_val[error_weights_val == 0] = 1
-    diffs = 2 * error_weights_val * (pred_val - preference_val_dense)
-    grad_r_user = diffs.dot(item_features)
-    grad_r_item = diffs.T.dot(user_features)
+    grad_r_user, grad_r_item = loss_d_emb(confidence_val_dense,
+                                          preference_val_dense,
+                                          pred_val,
+                                          user_features,
+                                          item_features)
 
     grad_user_m = np.zeros(shape=(train_csr.nnz, args.factor))
     grad_user_dict = {}
