@@ -27,7 +27,7 @@ parser.add_argument("--process", type=int, default=4, help="# of processes in th
 parser.add_argument("--mode", type=str, default="debug", help="debug/test")
 parser.add_argument("--implicit", action='store_true', help="use implicit ALS")
 parser.add_argument("--alpha", type=int, default=1, help="confidence scaling for implicit feedback dataset")
-parser.add_argument("--allow_confidence_increase", action='store_true', help='allow confidence increase during debug stage')
+parser.add_argument("--als_threads", type=int, default=6, help="num threads during implicit ALS fit")
 
 args = parser.parse_args()
 
@@ -95,8 +95,9 @@ def cf_ridge_regression(csr_matrix, reg_lambda, fixed_feature, update_feature):
 def ALS(train_csr, args, n_iters, init_user_features=None, init_item_features=None):
     if args.implicit:
         logging.info('ALS, alpha {} max rating {}'.format(args.alpha, train_csr.data.max()))
-        model = implicit.als.AlternatingLeastSquares(factors=args.factor, iterations=n_iters, num_threads=6,
-                                                     regularization=max(args.lambda_u, args.lambda_v))
+        model = implicit.als.AlternatingLeastSquares(factors=args.factor, iterations=n_iters, num_threads=args.als_threads,
+                                                     regularization=max(args.lambda_u, args.lambda_v),
+                                                     random_state=0)
         model.fit(train_csr.T, show_progress=False)
         return model.user_factors, model.item_factors
     else:
@@ -270,8 +271,6 @@ def get_path(args, part_id):
     path = f"./save/{args.dataset}/f{args.fold}_m{args.debug_iter}_lr{args.debug_lr}_part{part_id}_{args.retrain}"
     if args.implicit:
         path += '_implicit'
-    if args.allow_confidence_increase:
-        path += '_allow_conf_increase'
     return path + '.txt'
 
 
@@ -309,6 +308,7 @@ def aggregate_process(edit, sorted_edges, train_csr, test_csr, args, old_pred, m
         precisions = precision_at_10_with_t_test(new_pred, old_pred, test_csr)
     else:
         test_csr_binarized = test_csr.copy()
+        test_csr_binarized[test_csr_binarized <= 3] = 0
         test_csr_binarized[test_csr_binarized > 3] = 1
         aucs = roc_auc_with_t_test(new_pred, old_pred, test_csr_binarized)
         mse = RMSE_with_ttest(new_pred, old_pred, test_csr)
@@ -331,8 +331,6 @@ if __name__ == "__main__":
         fold_id = 0
         for rnd in range((args.fold + args.process - 1) // args.process):
             processes = []
-            if args.implicit and args.allow_confidence_increase:
-                max_rating *= 2
             for i in range(fold_id, fold_id + args.process):
                 process = Process(target=debug_process, args=(train_csr[i + 1], val_csr[i + 1], zipped_index[i + 1],
                                                               max_rating, min_rating, i + 1, args))

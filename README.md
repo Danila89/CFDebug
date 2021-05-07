@@ -5,6 +5,7 @@ Code for NeurIPS'20 paper Trading Personalization for Accuracy: Data Debugging i
 python3
 numpy
 scipy
+implicit
 ```
 
 **Usage**
@@ -30,4 +31,7 @@ parser.add_argument("--debug_lr", type=float, default=0.05, help="learning rate 
 parser.add_argument("--retrain", type=str, default="full", help="the retraining mode in the debugging stage: full/inc")
 parser.add_argument("--process", type=int, default=4, help="# of processes in the debugging stage")
 parser.add_argument("--mode", type=str, default="debug", help="debug/test")
+parser.add_argument("--implicit", action='store_true', help="use implicit ALS")
+parser.add_argument("--alpha", type=int, default=1, help="confidence scaling for implicit feedback dataset")
+parser.add_argument("--als_threads", type=int, default=6, help="num threads during implicit ALS fit")
 ```
