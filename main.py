@@ -95,7 +95,7 @@ def cf_ridge_regression(csr_matrix, reg_lambda, fixed_feature, update_feature):
 
 def ALS(train_csr, args, n_iters, init_user_features=None, init_item_features=None):
     if args.implicit:
-        logging.info('ALS, alpha {} max rating {}'.format(args.alpha, train_csr.data.max()))
+        logging.info('Implicit ALS, alpha {} max rating {}'.format(args.alpha, train_csr.data.max()))
         model = implicit.als.AlternatingLeastSquares(factors=args.factor, iterations=n_iters, num_threads=args.als_threads,
                                                      regularization=max(args.lambda_u, args.lambda_v),
                                                      random_state=0)
@@ -110,7 +110,7 @@ def ALS(train_csr, args, n_iters, init_user_features=None, init_item_features=No
             item_features = init_item_features
         train_csr_transpose = train_csr.T.tocsr()
         for iteration in range(n_iters):
-            logging.info('ALS iteration {}'.format(iteration))
+            logging.info('Explicit ALS iteration {}'.format(iteration))
             cf_ridge_regression(train_csr, args.lambda_u, item_features, user_features)
             cf_ridge_regression(train_csr_transpose, args.lambda_v, user_features, item_features)
         return user_features, item_features
@@ -355,6 +355,9 @@ if __name__ == "__main__":
                 aucs, mse, precisions = aggregate_process(edit, sorted_edges, test_train_csr,
                                                           test_csr, args, old_pred,
                                                           max_rating, min_rating, percent)
-                print(f"{edit} {percent}% training data, ALS objective on test: {mse[1]} -> {mse[0]}, p_value: {mse[2]}")
+                if args.implicit:
+                    print(f"{edit} {percent}% training data, weighted rmse on test: {mse[1]} -> {mse[0]}, p_value: {mse[2]}")
+                else:
+                    print(f"{edit} {percent}% training data, rmse on test: {mse[1]} -> {mse[0]}, p_value: {mse[2]}")
                 print(f"{edit} {percent}% training data, aucs on test: {aucs[1]} -> {aucs[0]}, p_value: {aucs[2]}")
                 print(f"{edit} {percent}% training data, p@10 on test: {precisions[1]} -> {precisions[0]}, p_value: {precisions[2]}")
