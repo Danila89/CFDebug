@@ -8,6 +8,7 @@ python3
 numpy
 scipy
 implicit
+scikit-learn
 ```
 
 **Usage**
