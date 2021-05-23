@@ -1,19 +1,30 @@
 Code for NeurIPS'20 paper Trading Personalization for Accuracy: Data Debugging in Collaborative Filtering
 
+Implicit feedback support added
+
 **Requirements**
 ```
 python3
 numpy
 scipy
+implicit
+scikit-learn
 ```
 
 **Usage**
 
-`python main.py --mode=test`
+Run debug process for explicit ALS on movielens
+`python main.py --mode debug`
 
-Run the above command to get the result on the movielens dataset.
+Run debug process for implicit ALS on movielens
+`python main.py --mode debug --implicit --alpha 5`
 
-To run the debug process, configure other parameters in the command, where the _mode_ parameter is set to _debug_.
+Get metrics for explicit ALS on movielens
+`python main.py --mode test`
+
+Get metrics process for implicit ALS on movielens
+`python main.py --mode test --implicit --alpha 5`
+
 
 Here is the code fragment about the settings of hyperparameters.
 
@@ -30,4 +41,7 @@ parser.add_argument("--debug_lr", type=float, default=0.05, help="learning rate 
 parser.add_argument("--retrain", type=str, default="full", help="the retraining mode in the debugging stage: full/inc")
 parser.add_argument("--process", type=int, default=4, help="# of processes in the debugging stage")
 parser.add_argument("--mode", type=str, default="debug", help="debug/test")
+parser.add_argument("--implicit", action='store_true', help="use implicit ALS")
+parser.add_argument("--alpha", type=int, default=1, help="confidence scaling for implicit feedback dataset")
+parser.add_argument("--als_threads", type=int, default=6, help="num threads during implicit ALS fit")
 ```
