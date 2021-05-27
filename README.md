@@ -1,6 +1,6 @@
 Code for NeurIPS'20 paper Trading Personalization for Accuracy: Data Debugging in Collaborative Filtering
 
-Implicit feedback support added
+Implicit feedback support added, see https://vkteam.medium.com/data-debugging-in-collaborative-filtering-with-implicit-feedback-does-it-work-97e37414a687
 
 **Requirements**
 ```
